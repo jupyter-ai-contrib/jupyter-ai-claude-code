@@ -43,16 +43,18 @@ class ClaudeCodePersona(BasePersona):
             self.log.info(str(message))
             if isinstance(message, AssistantMessage):
                 result = await self.template_mgr.claude_message_to_str(message)
-                if result is not None:  # Only yield if we got actual content
+                # Template now handles everything - never stream individual components
+                if self.template_mgr.active:
+                    template_was_used = True
+                elif result is not None:
+                    # Only for messages without any tool usage (rare)
                     has_content = True
                     yield result + '\n\n'
-                elif self.template_mgr.active:
-                    # Template handled this message
-                    template_was_used = True
         
         # Complete template if active
         if self.template_mgr.active:
             await self.template_mgr.complete()
+            template_was_used = True
         
         # Only yield empty string if no content was produced and template wasn't used
         if not has_content and not template_was_used:
@@ -78,7 +80,7 @@ class ClaudeCodePersona(BasePersona):
 
     def _get_system_prompt(self):
         """Get the system prompt for Claude Code options."""
-        return "I am Claude Code, an AI assistant with access to development tools."
+        return "..."
 
     async def process_message(self, message: Message) -> None:
         """Process incoming message and stream Claude Code response."""
