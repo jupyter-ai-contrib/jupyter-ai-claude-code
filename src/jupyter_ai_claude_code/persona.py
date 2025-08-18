@@ -10,7 +10,7 @@ from claude_code_sdk import (
 )
 
 from .templates import (
-    TemplateManager, claude_message_to_str
+    ClaudeCodeTemplateManager
 )
 
 
@@ -22,7 +22,7 @@ class ClaudeCodePersona(BasePersona):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.template_mgr = TemplateManager(self)
+        self.template_mgr = ClaudeCodeTemplateManager(self)
 
     @property
     def defaults(self) -> PersonaDefaults:
@@ -42,7 +42,7 @@ class ClaudeCodePersona(BasePersona):
         async for message in message_iterator:
             self.log.info(str(message))
             if isinstance(message, AssistantMessage):
-                result = await claude_message_to_str(message, self.template_mgr)
+                result = await self.template_mgr.claude_message_to_str(message)
                 if result is not None:  # Only yield if we got actual content
                     has_content = True
                     yield result + '\n\n'

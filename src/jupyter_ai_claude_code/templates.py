@@ -1,10 +1,10 @@
-"""Message template management for Claude Code persona."""
+"""Claude Code message template management for Jupyter AI persona."""
 
 from typing import Dict, Any, List, Optional
 import datetime
 from jinja2 import Template
 from jupyterlab_chat.models import Message, NewMessage
-from claude_code_sdk import TextBlock, ToolUseBlock
+from claude_code_sdk import TextBlock, ToolUseBlock, ToolResultBlock, AssistantMessage
 
 
 # Template for rendering todo lists with progress
@@ -24,21 +24,25 @@ TODO_TEMPLATE = Template("""
 
 {%- endif %}
 
-{%- if current_action %}
-#### Current Action
-{{ current_action }}
-
-{%- endif %}
-
-{%- if previous_actions %}
+{%- if completed_actions %}
 <details>
-<summary>Previous Actions ({{ previous_actions|length }})</summary>
+<summary>Completed Actions ({{ completed_actions|length }})</summary>
 
-{%- for action in previous_actions %}
-{{ loop.index }}. {{ action }}
+{%- for action in completed_actions %}
+{{ loop.index }}. **{{ action.tool_call }}**
+```
+{{ action.result }}
+```
+
 {%- endfor %}
 
 </details>
+
+{%- endif %}
+
+{%- if current_action %}
+#### Current Action
+{{ current_action }}
 
 {%- endif %}
 
@@ -48,15 +52,24 @@ TODO_TEMPLATE = Template("""
 """.strip())
 
 
-class TemplateManager:
-    """Manages in-place template message updates."""
+class ClaudeCodeTemplateManager:
+    """Manages in-place template message updates for Claude Code SDK messages."""
+    
+    # Tool parameter mapping for display formatting
+    TOOL_PARAM_MAPPING = {
+        'Task': 'description', 'Bash': 'command', 'Glob': 'pattern', 'Grep': 'pattern',
+        'LS': 'path', 'Read': 'file_path', 'Edit': 'file_path', 'MultiEdit': 'file_path', 
+        'Write': 'file_path', 'NotebookRead': 'notebook_path', 'NotebookWrite': 'notebook_path',
+        'WebFetch': 'url', 'WebSearch': 'query'
+    }
     
     def __init__(self, persona):
         self.persona = persona
         self.message_id = None
         self.todos = []
-        self.action = None
-        self.previous_actions = []
+        self.current_action = None
+        self.current_action_result = None
+        self.completed_actions = []  # List of {'tool_call': str, 'result': str}
         self.text_parts = []
         self.active = False
 
@@ -83,14 +96,26 @@ class TemplateManager:
     async def update_action(self, action):
         """Update current action in template."""
         if self.active:
-            # Move current action to previous actions if it exists
-            if self.action and self.action != action:
-                self.previous_actions.append(self.action)
+            # Complete previous action if it exists
+            if self.current_action:
+                self.completed_actions.append({
+                    'tool_call': self.current_action,
+                    'result': self.current_action_result or 'No result captured'
+                })
             
-            self.action = action
+            self.current_action = action
+            self.current_action_result = None  # Reset for new action
             await self._update_message()
             return ""
         return action
+
+    async def update_action_result(self, result):
+        """Update the result of the current action."""
+        if self.active and self.current_action:
+            self.current_action_result = result
+            await self._update_message()
+            return ""
+        return result
 
     async def update_text(self, text):
         """Add text to template response."""
@@ -128,18 +153,22 @@ class TemplateManager:
         """Render current template state."""
         return TODO_TEMPLATE.render(
             todos=self.todos,
-            current_action=self.action,
-            previous_actions=self.previous_actions if len(self.previous_actions) > 0 else None,
+            current_action=self.current_action,
+            completed_actions=self.completed_actions if len(self.completed_actions) > 0 else None,
             response_text='\n'.join(self.text_parts) if self.text_parts else None
         )
 
     async def complete(self):
-        """Complete template - move current action to history and clear it."""
+        """Complete template - move current action to completed actions and clear it."""
         if self.active and self.message_id:
-            # Move current action to previous actions if it exists
-            if self.action:
-                self.previous_actions.append(self.action)
-                self.action = None  # Clear current action
+            # Move current action to completed actions if it exists
+            if self.current_action:
+                self.completed_actions.append({
+                    'tool_call': self.current_action,
+                    'result': self.current_action_result or 'No result captured'
+                })
+                self.current_action = None  # Clear current action
+                self.current_action_result = None
             
             # Do final template update to show completed state
             await self._update_message()
@@ -149,66 +178,66 @@ class TemplateManager:
         self.message_id = None
         self.active = False
 
+    def format_tool_input(self, tool_name, tool_input):
+        """Format tool input for display."""
+        if tool_name in self.TOOL_PARAM_MAPPING:
+            key = self.TOOL_PARAM_MAPPING[tool_name]
+            return tool_input.get(key, '')
+        
+        # Format remaining args (excluding content)
+        args = [f"{k}={v}" for k, v in tool_input.items() if k != 'content']
+        return ', '.join(args)
+
+    async def process_message_block(self, block):
+        """Process a single Claude SDK message block (text or tool)."""
+        if isinstance(block, TextBlock):
+            if self.active:
+                await self.update_text(block.text)
+                return None  # Template handles display, don't stream
+            return block.text
+        
+        elif isinstance(block, ToolUseBlock):
+            if block.name == 'TodoWrite':
+                todos = block.input.get('todos', [])
+                await self.update_todos(todos)
+                return None  # Template handles display, don't stream
+            
+            # Regular tool display
+            tool_display = f"🛠️ {block.name}({self.format_tool_input(block.name, block.input)})"
+            
+            if self.active:
+                await self.update_action(tool_display)
+                return None  # Template handles display, don't stream
+            return tool_display
+        
+        elif isinstance(block, ToolResultBlock):
+            # Handle tool result
+            if self.active:
+                # Format the result for display
+                result_text = str(block.content) if hasattr(block, 'content') else str(block)
+                await self.update_action_result(result_text)
+                return None  # Template handles display, don't stream
+            return f"Result: {block.content if hasattr(block, 'content') else block}"
+        
+        return str(block)
+
+    async def claude_message_to_str(self, message) -> Optional[str]:
+        """Convert Claude SDK Message to string, handling template updates."""
+        text_parts = []
+        for block in message.content:
+            result = await self.process_message_block(block)
+            if result is not None:  # Only add non-None results
+                text_parts.append(result)
+        return '\n'.join(text_parts) if text_parts else None
+
     def reset(self):
         """Reset for new conversation."""
         self.message_id = None
         self.todos = []
-        self.action = None
-        self.previous_actions = []
+        self.current_action = None
+        self.current_action_result = None
+        self.completed_actions = []
         self.text_parts = []
         self.active = False
 
 
-# Tool parameter mapping for display formatting
-TOOL_PARAM_MAPPING = {
-    'Task': 'description', 'Bash': 'command', 'Glob': 'pattern', 'Grep': 'pattern',
-    'LS': 'path', 'Read': 'file_path', 'Edit': 'file_path', 'MultiEdit': 'file_path', 
-    'Write': 'file_path', 'NotebookRead': 'notebook_path', 'NotebookWrite': 'notebook_path',
-    'WebFetch': 'url', 'WebSearch': 'query'
-}
-
-
-def format_tool_input(tool_name, tool_input):
-    """Format tool input for display."""
-    if tool_name in TOOL_PARAM_MAPPING:
-        key = TOOL_PARAM_MAPPING[tool_name]
-        return tool_input.get(key, '')
-    
-    # Format remaining args (excluding content)
-    args = [f"{k}={v}" for k, v in tool_input.items() if k != 'content']
-    return ', '.join(args)
-
-
-async def process_message_block(block, template_mgr=None):
-    """Process a single message block (text or tool)."""
-    if isinstance(block, TextBlock):
-        if template_mgr and template_mgr.active:
-            await template_mgr.update_text(block.text)
-            return None  # Template handles display, don't stream
-        return block.text
-    
-    elif isinstance(block, ToolUseBlock):
-        if block.name == 'TodoWrite' and template_mgr:
-            todos = block.input.get('todos', [])
-            await template_mgr.update_todos(todos)
-            return None  # Template handles display, don't stream
-        
-        # Regular tool display
-        tool_display = f"🛠️ {block.name}({format_tool_input(block.name, block.input)})"
-        
-        if template_mgr and template_mgr.active:
-            await template_mgr.update_action(tool_display)
-            return None  # Template handles display, don't stream
-        return tool_display
-    
-    return str(block)
-
-
-async def claude_message_to_str(message, template_mgr=None) -> Optional[str]:
-    """Convert Claude Message to string, handling template updates."""
-    text_parts = []
-    for block in message.content:
-        result = await process_message_block(block, template_mgr)
-        if result is not None:  # Only add non-None results
-            text_parts.append(result)
-    return '\n'.join(text_parts) if text_parts else None
