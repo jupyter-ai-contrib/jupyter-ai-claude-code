@@ -2,7 +2,9 @@
 
 from typing import Dict, Any, List, Optional
 import datetime
-from dataclasses import dataclass
+import os
+import re
+from dataclasses import dataclass, field
 from jinja2 import Template
 from jupyterlab_chat.models import Message, NewMessage
 from claude_code_sdk import TextBlock, ToolUseBlock, ToolResultBlock, AssistantMessage
@@ -11,19 +13,12 @@ from claude_code_sdk import TextBlock, ToolUseBlock, ToolResultBlock, AssistantM
 @dataclass
 class MessageData:
     """Dataclass containing all data needed for message template rendering."""
-    todos: List[Dict[str, Any]] = None
+    todos: List[Dict[str, Any]] = field(default_factory=list)
     current_action: Dict[str, str] = None
-    completed_actions: List[str] = None
+    completed_actions: List[str] = field(default_factory=list)
     current_result: str = None
     initial_text: str = None
     final_text: str = None
-    
-    def __post_init__(self):
-        """Initialize mutable defaults."""
-        if self.todos is None:
-            self.todos = []
-        if self.completed_actions is None:
-            self.completed_actions = []
 
 
 # Template for rendering consolidated actions and final response
@@ -56,7 +51,7 @@ TODO_TEMPLATE = Template("""
 
 {%- endif %}
 
-{% if data.completed_actions %}
+{% if data.completed_actions and data.completed_actions|length > 0 %}
 
 **Tools Called:**
 <details>
@@ -87,6 +82,10 @@ TODO_TEMPLATE = Template("""
 class ClaudeCodeTemplateManager:
     """Manages in-place template message updates for Claude Code SDK messages."""
     
+    # Constants
+    MAX_TOOL_VALUE_LENGTH = 60
+    MAX_ARG_LENGTH = 30
+    
     # Tool parameter mapping for display formatting
     TOOL_PARAM_MAPPING = {
         'Task': 'description', 'Bash': 'command', 'Glob': 'pattern', 'Grep': 'pattern',
@@ -94,6 +93,9 @@ class ClaudeCodeTemplateManager:
         'Write': 'file_path', 'NotebookRead': 'notebook_path', 'NotebookWrite': 'notebook_path',
         'WebFetch': 'url', 'WebSearch': 'query'
     }
+    
+    # Tools that should have clickable file links
+    FILE_LINK_TOOLS = {'Read', 'Edit', 'MultiEdit', 'Write'}
     
     def __init__(self, persona):
         self.persona = persona
@@ -112,6 +114,13 @@ class ClaudeCodeTemplateManager:
         new_ids = {t['id'] for t in new_todos}
         return old_ids == new_ids
 
+    async def _ensure_message_exists(self):
+        """Ensure a message exists, creating one if needed."""
+        if not self.message_id:
+            await self._create_message()
+        else:
+            await self._update_message()
+
     async def update_todos(self, todos):
         """Update todo list, creating or updating message as needed."""
         self.message_data.todos = todos
@@ -119,9 +128,8 @@ class ClaudeCodeTemplateManager:
         # Always ensure template is active when we have todos
         if not self.active:
             self.active = True
-            await self._create_message()
-        else:
-            await self._update_message()
+        
+        await self._ensure_message_exists()
         return ""
 
     async def update_action(self, action):
@@ -137,7 +145,8 @@ class ClaudeCodeTemplateManager:
             # Always start template if not active yet
             if not self.turn_active:
                 self.turn_active = True
-                await self._create_message()
+                if not self.message_id:
+                    await self._create_message()
             
             # Set new current action
             self.message_data.current_action = {
@@ -148,14 +157,14 @@ class ClaudeCodeTemplateManager:
             # Reset final phase when we start a new action
             self.in_final_phase = False
             
-            await self._update_message()
+            await self._ensure_message_exists()
             return ""
         return action
 
     async def update_action_result(self, result):
         """Update the result of the current action."""
         if self.active and self.message_data.current_action:
-            # Update the current action's result
+            # Update the current action's result (just escape markdown, no aggressive path linking)
             self.message_data.current_action['result'] = self._escape_markdown(result)
             
             # Set this as the current result (just the result text, no tool call)
@@ -167,7 +176,7 @@ class ClaudeCodeTemplateManager:
             self.message_data.current_action = None
             self.in_final_phase = True  # Now any subsequent text should go to final_text
             
-            await self._update_message()
+            await self._ensure_message_exists()
             return ""
         return result
 
@@ -189,7 +198,7 @@ class ClaudeCodeTemplateManager:
                     self.message_data.current_result = text
                 else:
                     # Append to existing result if already has content
-                    self.message_data.current_action['result'] += '\\n' + text
+                    self.message_data.current_action['result'] += '\n' + text
                     self.message_data.current_result = self.message_data.current_action['result']
             else:
                 # No current action or we're in final phase - this is final summary text
@@ -199,7 +208,9 @@ class ClaudeCodeTemplateManager:
                 else:
                     self.message_data.final_text = text
                 self.in_final_phase = True  # Mark that we're now in final phase
-            await self._update_message()
+            
+            # Create or update message
+            await self._ensure_message_exists()
             return ""
         return text
 
@@ -229,34 +240,21 @@ class ClaudeCodeTemplateManager:
 
     def _render_template(self):
         """Render current template state."""
-        # Prepare completed_actions for template (only if non-empty)
-        completed_actions = self.message_data.completed_actions if len(self.message_data.completed_actions) > 0 else None
-        
-        # Create a copy of message_data with the processed completed_actions
-        data = MessageData(
-            todos=self.message_data.todos,
-            current_action=self.message_data.current_action,
-            completed_actions=completed_actions,
-            current_result=self.message_data.current_result,
-            initial_text=self.message_data.initial_text,
-            final_text=self.message_data.final_text
-        )
-        
-        return TODO_TEMPLATE.render(data=data)
+        return TODO_TEMPLATE.render(data=self.message_data)
 
     async def complete(self):
         """Complete template - move current action to completed actions."""
         if self.active and self.message_id:
             # Move current action to completed actions if it exists
             if self.message_data.current_action:
-                self.message_data.completed_actions.append(self.message_data.current_action)
+                self.message_data.completed_actions.append(self.message_data.current_action['tool_call'])
                 self.message_data.current_action = None
             
             # Mark that we're now in final phase - any subsequent text should go to final_text
             self.in_final_phase = True
             
             # Do final template update to show completed state
-            await self._update_message()
+            await self._ensure_message_exists()
         elif self.active:
             # Still mark final phase even without message_id
             self.in_final_phase = True
@@ -286,23 +284,59 @@ class ClaudeCodeTemplateManager:
             result = result.replace(char, escape)
         return result
 
+    def _make_jupyter_file_link(self, file_path):
+        """Convert file path to clickable JupyterLab file link."""
+        # Get server root reference for path resolution
+        server_root_reference = self._get_server_root_reference()
+        relative_path = self._resolve_relative_path(file_path, server_root_reference)
+        return f"[{file_path}](/files/{relative_path})"
+    
+    def _get_server_root_reference(self):
+        """Get server root directory reference from persona."""
+        try:
+            workspace_dir = getattr(self.persona, 'get_workspace_dir', lambda: None)()
+            chat_dir = getattr(self.persona, 'get_chat_dir', lambda: None)()
+            return workspace_dir or chat_dir
+        except Exception:
+            return None
+    
+    def _resolve_relative_path(self, file_path, server_root_reference):
+        """Resolve file path to be relative to server root."""
+        if not file_path.startswith('/') or not server_root_reference:
+            return file_path.lstrip('/')
+        
+        try:
+            relative_path = os.path.relpath(file_path, start=server_root_reference)
+            # If path goes outside server root, use basename only
+            return os.path.basename(file_path) if relative_path.startswith('..') else relative_path
+        except (ValueError, OSError):
+            return os.path.basename(file_path)
+
     def format_tool_input(self, tool_name, tool_input):
         """Format tool input for Claude Code CLI style display."""
         if tool_name in self.TOOL_PARAM_MAPPING:
             key = self.TOOL_PARAM_MAPPING[tool_name]
             value = tool_input.get(key, '')
-            # For long values, truncate with ellipsis
-            if len(str(value)) > 60:
-                return self._escape_markdown(str(value)[:60] + '…')
-            return self._escape_markdown(str(value))
+            
+            # Make file paths clickable for file-related tools
+            if tool_name in self.FILE_LINK_TOOLS and value:
+                if len(str(value)) > self.MAX_TOOL_VALUE_LENGTH:
+                    truncated = str(value)[:self.MAX_TOOL_VALUE_LENGTH] + '…'
+                    return self._make_jupyter_file_link(truncated)
+                return self._make_jupyter_file_link(str(value))
+            else:
+                # For other tools, just escape markdown
+                if len(str(value)) > self.MAX_TOOL_VALUE_LENGTH:
+                    return self._escape_markdown(str(value)[:self.MAX_TOOL_VALUE_LENGTH] + '…')
+                return self._escape_markdown(str(value))
         
         # Format remaining args (excluding content)
         args = []
         for k, v in tool_input.items():
             if k != 'content':
                 val_str = str(v)
-                if len(val_str) > 30:
-                    val_str = val_str[:30] + '…'
+                if len(val_str) > self.MAX_ARG_LENGTH:
+                    val_str = val_str[:self.MAX_ARG_LENGTH] + '…'
                 args.append(f"{k}={self._escape_markdown(val_str)}")
         return ', '.join(args)
 

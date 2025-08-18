@@ -61,8 +61,10 @@ class ClaudeCodePersona(BasePersona):
             await self.template_mgr.complete()
             template_was_used = True
         
-        # Only yield empty string if no content was produced and template wasn't used
-        if not has_content and not template_was_used:
+        # Always yield something to complete the stream
+        if template_was_used:
+            yield ""  # Empty yield to signal completion when template handled everything
+        elif not has_content:
             yield ""  # Ensure stream completes for empty responses
 
     def _generate_prompt(self, message: Message) -> str:
