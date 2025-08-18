@@ -2,22 +2,41 @@
 
 from typing import Dict, Any, List, Optional
 import datetime
+from dataclasses import dataclass
 from jinja2 import Template
 from jupyterlab_chat.models import Message, NewMessage
 from claude_code_sdk import TextBlock, ToolUseBlock, ToolResultBlock, AssistantMessage
 
 
+@dataclass
+class MessageData:
+    """Dataclass containing all data needed for message template rendering."""
+    todos: List[Dict[str, Any]] = None
+    current_action: Dict[str, str] = None
+    completed_actions: List[str] = None
+    current_result: str = None
+    initial_text: str = None
+    final_text: str = None
+    
+    def __post_init__(self):
+        """Initialize mutable defaults."""
+        if self.todos is None:
+            self.todos = []
+        if self.completed_actions is None:
+            self.completed_actions = []
+
+
 # Template for rendering consolidated actions and final response
 TODO_TEMPLATE = Template("""
-{%- if initial_text %}
-{{ initial_text }}
+{%- if data.initial_text %}
+{{ data.initial_text }}
 
 {%- endif %}
 
-{% if todos %}
+{% if data.todos %}
 **Task Progress:**
 
-{%- for todo in todos %}
+{%- for todo in data.todos %}
 {%- if todo.status == 'completed' %}
 - [x] ~~{{ todo.content }}~~
 {%- elif todo.status == 'in_progress' %}
@@ -29,21 +48,21 @@ TODO_TEMPLATE = Template("""
 
 {%- endif %}
 
-{%- if current_action %}
+{%- if data.current_action %}
 
 **Current Tool:**  
-{{ current_action.tool_call }}  
+{{ data.current_action.tool_call }}  
 ⎿  Executing...
 
 {%- endif %}
 
-{% if completed_actions %}
+{% if data.completed_actions %}
 
 **Tools Called:**
 <details>
-<summary>See details ({{ completed_actions|length }})</summary>
+<summary>See details ({{ data.completed_actions|length }})</summary>
 
-{%- for action in completed_actions %}
+{%- for action in data.completed_actions %}
 
 {{ action }}  
 ⎿  Completed
@@ -53,13 +72,13 @@ TODO_TEMPLATE = Template("""
 <br>
 {% endif %}
 
-{% if current_result or final_text %}
+{% if data.current_result or data.final_text %}
 **Response:**
-{% if current_result %}
-{{ current_result }}
+{% if data.current_result %}
+{{ data.current_result }}
 {% endif %}
-{% if final_text %}
-{{ final_text }}
+{% if data.final_text %}
+{{ data.final_text }}
 {% endif %}
 {% endif %}
 """.strip())
@@ -79,12 +98,7 @@ class ClaudeCodeTemplateManager:
     def __init__(self, persona):
         self.persona = persona
         self.message_id = None
-        self.todos = []
-        self.current_action = None  # Currently executing action
-        self.completed_actions = []  # List of tool calls (without results)
-        self.current_result = None   # Current result message (replaces previous)
-        self.initial_text_parts = []  # Text before any tool calls
-        self.final_text_parts = []    # Text after tool calls
+        self.message_data = MessageData()  # Single dataclass for all template data
         self.active = False
         self.turn_active = False  # Track if we're in an active Claude turn
         self.has_actions = False  # Track if we've seen any tool calls
@@ -92,15 +106,15 @@ class ClaudeCodeTemplateManager:
 
     def _same_todo_list(self, new_todos):
         """Check if this is the same todo list (just status updates)."""
-        if not self.todos:
+        if not self.message_data.todos:
             return False
-        old_ids = {t['id'] for t in self.todos}
+        old_ids = {t['id'] for t in self.message_data.todos}
         new_ids = {t['id'] for t in new_todos}
         return old_ids == new_ids
 
     async def update_todos(self, todos):
         """Update todo list, creating or updating message as needed."""
-        self.todos = todos
+        self.message_data.todos = todos
         
         # Always ensure template is active when we have todos
         if not self.active:
@@ -114,8 +128,8 @@ class ClaudeCodeTemplateManager:
         """Start a new action - show it as current action."""
         if self.active:
             # Complete previous action if it exists (just add tool call to completed)
-            if self.current_action:
-                self.completed_actions.append(self.current_action['tool_call'])
+            if self.message_data.current_action:
+                self.message_data.completed_actions.append(self.message_data.current_action['tool_call'])
             
             # Mark that we've seen actions
             self.has_actions = True
@@ -126,7 +140,7 @@ class ClaudeCodeTemplateManager:
                 await self._create_message()
             
             # Set new current action
-            self.current_action = {
+            self.message_data.current_action = {
                 'tool_call': action,
                 'result': 'Executing...'
             }
@@ -140,17 +154,17 @@ class ClaudeCodeTemplateManager:
 
     async def update_action_result(self, result):
         """Update the result of the current action."""
-        if self.active and self.current_action:
+        if self.active and self.message_data.current_action:
             # Update the current action's result
-            self.current_action['result'] = self._escape_markdown(result)
+            self.message_data.current_action['result'] = self._escape_markdown(result)
             
             # Set this as the current result (just the result text, no tool call)
-            self.current_result = self.current_action['result']
+            self.message_data.current_result = self.message_data.current_action['result']
             
             # After receiving a result, the action is complete
             # Move just the tool call to completed actions
-            self.completed_actions.append(self.current_action['tool_call'])
-            self.current_action = None
+            self.message_data.completed_actions.append(self.message_data.current_action['tool_call'])
+            self.message_data.current_action = None
             self.in_final_phase = True  # Now any subsequent text should go to final_text
             
             await self._update_message()
@@ -162,22 +176,28 @@ class ClaudeCodeTemplateManager:
         if self.active:
             # If we haven't seen actions yet, add to initial text
             if not self.has_actions:
-                self.initial_text_parts.append(text)
-            elif self.current_action and not self.in_final_phase:
+                if self.message_data.initial_text:
+                    self.message_data.initial_text += '\n' + text
+                else:
+                    self.message_data.initial_text = text
+            elif self.message_data.current_action and not self.in_final_phase:
                 # If we have a current action and not in final phase, treat this text as its result
                 # This handles cases where tool results come as text blocks
-                if self.current_action['result'] == 'Executing...':
-                    self.current_action['result'] = text
+                if self.message_data.current_action['result'] == 'Executing...':
+                    self.message_data.current_action['result'] = text
                     # Update current result display (just the result text)
-                    self.current_result = text
+                    self.message_data.current_result = text
                 else:
                     # Append to existing result if already has content
-                    self.current_action['result'] += '\\n' + text
-                    self.current_result = self.current_action['result']
+                    self.message_data.current_action['result'] += '\\n' + text
+                    self.message_data.current_result = self.message_data.current_action['result']
             else:
                 # No current action or we're in final phase - this is final summary text
                 # This should appear after the horizontal rule
-                self.final_text_parts.append(text)
+                if self.message_data.final_text:
+                    self.message_data.final_text += '\n' + text
+                else:
+                    self.message_data.final_text = text
                 self.in_final_phase = True  # Mark that we're now in final phase
             await self._update_message()
             return ""
@@ -209,22 +229,28 @@ class ClaudeCodeTemplateManager:
 
     def _render_template(self):
         """Render current template state."""
-        return TODO_TEMPLATE.render(
-            todos=self.todos,
-            current_action=self.current_action,
-            completed_actions=self.completed_actions if len(self.completed_actions) > 0 else None,
-            current_result=self.current_result,
-            initial_text='\n'.join(self.initial_text_parts) if self.initial_text_parts else None,
-            final_text='\n'.join(self.final_text_parts) if self.final_text_parts else None
+        # Prepare completed_actions for template (only if non-empty)
+        completed_actions = self.message_data.completed_actions if len(self.message_data.completed_actions) > 0 else None
+        
+        # Create a copy of message_data with the processed completed_actions
+        data = MessageData(
+            todos=self.message_data.todos,
+            current_action=self.message_data.current_action,
+            completed_actions=completed_actions,
+            current_result=self.message_data.current_result,
+            initial_text=self.message_data.initial_text,
+            final_text=self.message_data.final_text
         )
+        
+        return TODO_TEMPLATE.render(data=data)
 
     async def complete(self):
         """Complete template - move current action to completed actions."""
         if self.active and self.message_id:
             # Move current action to completed actions if it exists
-            if self.current_action:
-                self.completed_actions.append(self.current_action)
-                self.current_action = None
+            if self.message_data.current_action:
+                self.message_data.completed_actions.append(self.message_data.current_action)
+                self.message_data.current_action = None
             
             # Mark that we're now in final phase - any subsequent text should go to final_text
             self.in_final_phase = True
@@ -324,12 +350,7 @@ class ClaudeCodeTemplateManager:
     def reset(self):
         """Reset for new conversation."""
         self.message_id = None
-        self.todos = []
-        self.current_action = None
-        self.completed_actions = []
-        self.current_result = None
-        self.initial_text_parts = []
-        self.final_text_parts = []
+        self.message_data = MessageData()  # Reset to new dataclass instance
         self.active = False
         self.turn_active = False
         self.has_actions = False
