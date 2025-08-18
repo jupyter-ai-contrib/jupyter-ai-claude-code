@@ -284,12 +284,23 @@ class ClaudeCodeTemplateManager:
             result = result.replace(char, escape)
         return result
 
-    def _make_jupyter_file_link(self, file_path):
-        """Convert file path to clickable JupyterLab file link."""
-        # Get server root reference for path resolution
+    def _make_jupyter_file_link(self, file_path, tool_name=None):
+        """Convert file path to clickable JupyterLab file link if path exists or will be created."""
         server_root_reference = self._get_server_root_reference()
         relative_path = self._resolve_relative_path(file_path, server_root_reference)
-        return f"[{file_path}](/files/{relative_path})"
+        
+        # Always create links for Write tools (file will be created)
+        # For other tools, only create link if file exists
+        should_create_link = (
+            tool_name == 'Write' or 
+            self._path_exists_on_server(relative_path, server_root_reference)
+        )
+        
+        if should_create_link:
+            return f"[{file_path}](/files/{relative_path})"
+        else:
+            # Return plain text if path doesn't exist and it's not a Write operation
+            return str(file_path)
     
     def _get_server_root_reference(self):
         """Get server root directory reference from persona."""
@@ -311,6 +322,26 @@ class ClaudeCodeTemplateManager:
             return os.path.basename(file_path) if relative_path.startswith('..') else relative_path
         except (ValueError, OSError):
             return os.path.basename(file_path)
+    
+    def _path_exists_on_server(self, relative_path, server_root_reference):
+        """Check if the relative path exists on the server."""
+        if not server_root_reference or not relative_path:
+            return False
+        
+        try:
+            # Construct full path from server root
+            full_path = os.path.join(server_root_reference, relative_path)
+            # Normalize path to handle any .. or . components
+            normalized_path = os.path.normpath(full_path)
+            
+            # Security check: ensure normalized path is still within server root
+            if not normalized_path.startswith(os.path.normpath(server_root_reference)):
+                return False
+            
+            # Check if file exists
+            return os.path.exists(normalized_path)
+        except Exception:
+            return False
 
     def format_tool_input(self, tool_name, tool_input):
         """Format tool input for Claude Code CLI style display."""
@@ -322,8 +353,8 @@ class ClaudeCodeTemplateManager:
             if tool_name in self.FILE_LINK_TOOLS and value:
                 if len(str(value)) > self.MAX_TOOL_VALUE_LENGTH:
                     truncated = str(value)[:self.MAX_TOOL_VALUE_LENGTH] + '…'
-                    return self._make_jupyter_file_link(truncated)
-                return self._make_jupyter_file_link(str(value))
+                    return self._make_jupyter_file_link(truncated, tool_name)
+                return self._make_jupyter_file_link(str(value), tool_name)
             else:
                 # For other tools, just escape markdown
                 if len(str(value)) > self.MAX_TOOL_VALUE_LENGTH:

@@ -27,16 +27,11 @@ class ClaudeCodePersona(BasePersona):
     @property
     def defaults(self) -> PersonaDefaults:
         """Return default configuration for the Claude Code persona."""
-        system_prompt = ("I am Claude Code, an AI assistant with access to development tools. "
-                        "When formatting responses, I use **bold text** for emphasis and section headers instead of markdown headings (# ## ###). "
-                        "I keep formatting clean and readable without large headers. "
-                        "For complex tasks requiring multiple steps (3+ actions), I proactively create a todo list using TodoWrite to track progress and keep the user informed of my plan.")
-        
         return PersonaDefaults(
             name="Claude",
             avatar_path="/files/.jupyter/claude.svg",
             description="Claude Code persona",
-            system_prompt=system_prompt,
+            system_prompt="...",
         )
     
     async def _process_response_message(self, message_iterator) -> AsyncIterator[str]:
