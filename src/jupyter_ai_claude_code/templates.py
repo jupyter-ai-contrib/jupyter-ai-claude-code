@@ -31,14 +31,17 @@ TODO_TEMPLATE = Template("""
 
 {%- if current_action %}
 
+**Current Action:**  
 {{ current_action.tool_call }}  
 ⎿  {{ current_action.result }}
 
 {%- endif %}
 
 {%- if completed_actions %}
+
+**Actions Taken:**
 <details>
-<summary>Actions Taken ({{ completed_actions|length }})</summary>
+<summary>See details ({{ completed_actions|length }})</summary>
 
 {%- for action in completed_actions %}
 
@@ -51,6 +54,8 @@ TODO_TEMPLATE = Template("""
 {%- endif %}
 
 {%- if final_text %}
+
+---
 
 {{ final_text }}
 {%- endif %}
