@@ -1,6 +1,13 @@
 # Jupyter AI Claude Code
 
-Jupyter AI integration with Claude Code.
+Jupyter AI integration with Claude Code persona for enhanced development capabilities.
+
+## Features
+
+- **Claude Code Integration**: Full Claude Code persona for Jupyter AI
+- **Development Tools**: Access to Claude Code's built-in development tools
+- **Seamless Integration**: Works with existing Jupyter AI workflow
+- **Template Management**: Interactive task progress tracking and updates
 
 ## Setup
 
@@ -39,7 +46,14 @@ This will:
 pixi run start
 ```
 
-This will start JupyterLab with the Jupyter AI extension and this package available.
+This will start JupyterLab with the Jupyter AI extension and Claude Code persona available.
+
+### Using Claude Code Persona
+
+1. Open JupyterLab
+2. Open the Jupyter AI chat panel
+3. Select "Claude" persona
+4. Interact with Claude Code's development tools
 
 ### Build the Package
 
@@ -57,6 +71,7 @@ The package source code is located in `src/jupyter_ai_claude_code/`.
 
 - **JupyterLab**: Latest stable version from conda-forge
 - **Jupyter AI**: Version 3.0.0b5 from PyPI
+- **Claude Code SDK**: For Claude Code integration
 - **Python**: >=3.8
 
 ## License

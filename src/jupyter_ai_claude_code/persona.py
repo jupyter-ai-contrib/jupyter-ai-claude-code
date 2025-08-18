@@ -1,92 +1,20 @@
 from typing import Dict, Any, List, Optional, AsyncIterator
+import datetime
 
 from jupyter_ai.personas.base_persona import BasePersona, PersonaDefaults
-from jupyterlab_chat.models import Message
+from jupyterlab_chat.models import Message, NewMessage
 
 from claude_code_sdk import (
-    query, ClaudeCodeOptions,
-    Message, SystemMessage, AssistantMessage, ResultMessage,
-    TextBlock, ToolUseBlock
+    query, ClaudeCodeOptions, AssistantMessage, TextBlock, ToolUseBlock,
+    UserMessage, SystemMessage
+)
+
+from .templates import (
+    TemplateManager, claude_message_to_str
 )
 
 
-OMIT_INPUT_ARGS = ['content']
 
-TOOL_PARAM_MAPPING = {
-    'Task': 'description',
-    'Bash': 'command',
-    'Glob': 'pattern',
-    'Grep': 'pattern',
-    'LS': 'path',
-    'Read': 'file_path',
-    'Edit': 'file_path',
-    'MultiEdit': 'file_path',
-    'Write': 'file_path',
-    'NotebookRead': 'notebook_path',
-    'NotebookWrite': 'notebook_path',
-    'WebFetch': 'url',
-    'WebSearch': 'query',
-}
-
-PROMPT_TEMPLATE = """
-{{body}}
-
-The user has selected the following files as attachements:
-
-
-"""
-
-def input_dict_to_str(d: Dict[str, Any]) -> str:
-    """Convert input dictionary to string representation, omitting specified args."""
-    args = []
-    for k, v in d.items():
-        if k not in OMIT_INPUT_ARGS:
-            args.append(f"{k}={v}")
-    return ', '.join(args)
-
-
-def tool_to_str(block: ToolUseBlock, persona_instance=None) -> str:
-    """Convert a ToolUseBlock to its string representation."""
-    results = []
-    
-    if block.name == 'TodoWrite':
-        block_id = block.id if hasattr(block, 'id') else str(hash(str(block.input)))
-        
-        if persona_instance and block_id in persona_instance._printed_todowrite_blocks:
-            return ""
-        
-        if persona_instance:
-            persona_instance._printed_todowrite_blocks.add(block_id)
-        
-        todos = block.input.get('todos', [])
-        results.append('TodoWrite()')
-        for todo in todos:
-            content = todo.get('content')
-            if content:
-                results.append(f"* {content}")
-    elif block.name in TOOL_PARAM_MAPPING:
-        param_key = TOOL_PARAM_MAPPING[block.name]
-        param_value = block.input.get(param_key, '')
-        results.append(f"🛠️ {block.name}({param_value})")
-    else:
-        results.append(f"🛠️ {block.name}({input_dict_to_str(block.input)})")
-    
-    return '\n'.join(results)
-
-
-def claude_message_to_str(message, persona_instance=None) -> Optional[str]:
-    """Convert a Claude Message to a string by extracting text content."""
-    text_parts = []
-    for block in message.content:
-        if isinstance(block, TextBlock):
-            text_parts.append(block.text)
-        elif isinstance(block, ToolUseBlock):
-            tool_str = tool_to_str(block, persona_instance)
-            if tool_str:
-                text_parts.append(tool_str)
-        else:
-            text_parts.append(str(block))
-    return '\n'.join(text_parts) if text_parts else None
 
 
 class ClaudeCodePersona(BasePersona):
@@ -94,7 +22,7 @@ class ClaudeCodePersona(BasePersona):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._printed_todowrite_blocks = set()
+        self.template_mgr = TemplateManager(self)
 
     @property
     def defaults(self) -> PersonaDefaults:
@@ -102,18 +30,33 @@ class ClaudeCodePersona(BasePersona):
         return PersonaDefaults(
             name="Claude",
             avatar_path="/files/.jupyter/claude.svg",
-            description="Claude Code",
-            system_prompt="...",
+            description="Claude Code persona",
+            system_prompt="I am Claude Code, an AI assistant with access to development tools.",
         )
     
     async def _process_response_message(self, message_iterator) -> AsyncIterator[str]:
-        """Process response messages from Claude Code SDK."""
-        async for response_message in message_iterator:
-            self.log.info(str(response_message))
-            if isinstance(response_message, AssistantMessage):
-                msg_str = claude_message_to_str(response_message, self)
-                if msg_str is not None:
-                    yield msg_str + '\n\n'
+        """Process response messages with template updates."""
+        has_content = False
+        template_was_used = False
+        
+        async for message in message_iterator:
+            self.log.info(str(message))
+            if isinstance(message, AssistantMessage):
+                result = await claude_message_to_str(message, self.template_mgr)
+                if result is not None:  # Only yield if we got actual content
+                    has_content = True
+                    yield result + '\n\n'
+                elif self.template_mgr.active:
+                    # Template handled this message
+                    template_was_used = True
+        
+        # Complete template if active
+        if self.template_mgr.active:
+            await self.template_mgr.complete()
+        
+        # Only yield empty string if no content was produced and template wasn't used
+        if not has_content and not template_was_used:
+            yield ""  # Ensure stream completes for empty responses
 
     def _generate_prompt(self, message: Message) -> str:
         attachment_ids = message.attachments
@@ -133,24 +76,54 @@ class ClaudeCodePersona(BasePersona):
         self.log.info(prompt)
         return prompt
 
+    def _get_system_prompt(self):
+        """Get the system prompt for Claude Code options."""
+        return "I am Claude Code, an AI assistant with access to development tools."
+
     async def process_message(self, message: Message) -> None:
         """Process incoming message and stream Claude Code response."""
-        self._printed_todowrite_blocks.clear()
-        async_gen = None
-        prompt = self._generate_prompt(message)
+        # Always set writing state at the start
+        self.awareness.set_local_state_field("isWriting", True)
+        
+        self.template_mgr.reset()
+        
         try:
-            async_gen = query(
-                prompt=prompt,
-                options=ClaudeCodeOptions(
-                    max_turns=20,
-                    cwd=self.get_workspace_dir(),
-                    permission_mode='bypassPermissions'
-                )
-            )
+            # Configure Claude Code - use workspace dir for better working directory detection
+            chat_dir = self.get_chat_dir()
+            workspace_dir = self.get_workspace_dir()
+            
+            # Prefer workspace dir if available, fallback to chat dir
+            working_dir = chat_dir if chat_dir else workspace_dir
+            
+            self.log.info(f"Chat directory: {chat_dir}")
+            self.log.info(f"Workspace directory: {workspace_dir}")
+            self.log.info(f"Using working directory: {working_dir}")
+            
+            options = {
+                'max_turns': 20,
+                'cwd': working_dir,
+                'permission_mode': 'bypassPermissions',
+                'system_prompt': self._get_system_prompt()
+            }
+            
+            # Generate prompt from current message
+            user_prompt = self._generate_prompt(message)
+            
+            # Stream response directly with prompt
+            async_gen = query(prompt=user_prompt, options=ClaudeCodeOptions(**options))
+            
+            # Use stream_message to handle the streaming
             await self.stream_message(self._process_response_message(async_gen))
+            
         except Exception as e:
-            self.log.error(f"Error in process_message: {e}")
-            await self.send_message(f"Sorry, I have had an internal error while working on that: {e}")
+            self.log.error(f"Error: {e}")
+            if self.template_mgr.active:
+                await self.template_mgr.complete()
+            
+            try:
+                await self.send_message(f"Sorry, error: {e}")
+            except TypeError:
+                self.send_message(f"Sorry, error: {e}")
         finally:
-            if async_gen is not None:
-                await async_gen.aclose()
+            # Always clear writing state when done
+            self.awareness.set_local_state_field("isWriting", False)
