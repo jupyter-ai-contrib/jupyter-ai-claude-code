@@ -27,7 +27,10 @@ class ClaudeCodePersona(BasePersona):
     @property
     def defaults(self) -> PersonaDefaults:
         """Return default configuration for the Claude Code persona."""
-        system_prompt = "I am Claude Code, an AI assistant with access to development tools. When formatting responses, I use **bold text** for emphasis and section headers instead of markdown headings (# ## ###). I keep formatting clean and readable without large headers."
+        system_prompt = ("I am Claude Code, an AI assistant with access to development tools. "
+                        "When formatting responses, I use **bold text** for emphasis and section headers instead of markdown headings (# ## ###). "
+                        "I keep formatting clean and readable without large headers. "
+                        "For complex tasks requiring multiple steps (3+ actions), I proactively create a todo list using TodoWrite to track progress and keep the user informed of my plan.")
         
         return PersonaDefaults(
             name="Claude",
@@ -82,7 +85,10 @@ class ClaudeCodePersona(BasePersona):
 
     def _get_system_prompt(self):
         """Get the system prompt for Claude Code options."""
-        return "I am Claude Code, an AI assistant with access to development tools. When formatting responses, I use **bold text** for emphasis and section headers instead of markdown headings (# ## ###). I keep formatting clean and readable without large headers."
+        return ("I am Claude Code, an AI assistant with access to development tools. "
+               "When formatting responses, I use **bold text** for emphasis and section headers instead of markdown headings (# ## ###). "
+               "I keep formatting clean and readable without large headers. "
+               "For complex tasks requiring multiple steps (3+ actions), I proactively create a todo list using TodoWrite to track progress and keep the user informed of my plan.")
 
     async def process_message(self, message: Message) -> None:
         """Process incoming message and stream Claude Code response."""
