@@ -4,7 +4,6 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jupyter-ai-claude-code"
-version = "0.0.0"
 description = "Jupyter AI integration with Claude Code"
 authors = [{ name = "Brian E. Granger", email = "ellisonbg@gmail.com" }]
 readme = "README.md"
@@ -15,9 +14,14 @@ dependencies = [
     "claude-code-sdk",
     "jupyter_server_documents",
 ]
+dynamic = ["version"]
 
 [project.entry-points."jupyter_ai.personas"]
 claude_code = "jupyter_ai_claude_code.persona:ClaudeCodePersona"
+
+[tool.hatch.version]
+# Version is defined by __version__ variable set in this file
+path = "src/jupyter_ai_claude_code/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jupyter_ai_claude_code"]
