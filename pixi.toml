@@ -3,7 +3,7 @@ authors = ["Brian E. Granger <ellisonbg@gmail.com>"]
 channels = ["conda-forge"]
 name = "jupyter-ai-claude-code"
 platforms = ["osx-arm64"]
-version = "0.1.0"
+version = "0.0.0"
 
 [tasks]
 start = "jupyter lab"

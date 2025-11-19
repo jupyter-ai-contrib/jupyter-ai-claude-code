@@ -4,13 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jupyter-ai-claude-code"
-version = "0.1.0"
+version = "0.0.0"
 description = "Jupyter AI integration with Claude Code"
-authors = [
-    {name = "Brian E. Granger", email = "ellisonbg@gmail.com"},
-]
+authors = [{ name = "Brian E. Granger", email = "ellisonbg@gmail.com" }]
 readme = "README.md"
-license = {text = "BSD-3-Clause"}
+license = { text = "BSD-3-Clause" }
 requires-python = ">=3.8"
 dependencies = [
     "jupyter-ai-persona-manager",
