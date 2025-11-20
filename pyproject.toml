@@ -25,6 +25,3 @@ path = "src/jupyter_ai_claude_code/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jupyter_ai_claude_code"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/jupyter_ai_claude_code/static" = "jupyter_ai_claude_code/static"
