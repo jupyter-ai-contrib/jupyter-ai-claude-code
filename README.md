@@ -10,7 +10,29 @@ Jupyter AI integration with Claude Code persona for enhanced development capabil
 - **Seamless Integration**: Works with existing Jupyter AI workflow
 - **Template Management**: Interactive task progress tracking and updates
 
-## Setup
+## User installation
+
+### Requirements
+
+- JupyterLab >= 4.0.0
+
+### Install
+
+To install the extension, execute:
+
+```bash
+pip install jupyter-ai-claude-code
+```
+
+### Uninstall
+
+To remove the extension, execute:
+
+```bash
+pip uninstall jupyter-ai-claude-code
+```
+
+## Developer Setup
 
 This project uses [pixi.sh](https://pixi.sh) for dependency management and environment setup.
 
