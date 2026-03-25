@@ -12,7 +12,6 @@ requires-python = ">=3.8"
 dependencies = [
     "jupyter-ai-persona-manager",
     "claude-code-sdk",
-    "jupyter_server_documents",
 ]
 dynamic = ["version"]
 
